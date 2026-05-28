@@ -1,5 +1,5 @@
 POSTGRES_USER=admin
-POSTGRES_PASSWORD=secret123
+POSTGRES_PASSWORD=secret1234
 POSTGRES_DB=procurement_db
 SECRET_KEY=bu_yerga_kamida_32_belgili_kalit_yozing_1234
 TELEGRAM_BOT_TOKEN=botfather_dan_olgan_tokeningiz
