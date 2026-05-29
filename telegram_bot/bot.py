@@ -23,18 +23,22 @@ logging.basicConfig(level=logging.INFO)
 # ✅ TUZATILDI: os.getenv() ga o'zgaruvchi NOMI beriladi, token emas
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+REDIS_URL = os.getenv("REDIS_URL")
 
 if not BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN environment variable is not set!")
 
 bot = Bot(token=BOT_TOKEN)
 
-# ✅ Redis mavjud bo'lmasa MemoryStorage ishlatadi
-try:
-    storage = RedisStorage.from_url(REDIS_URL)
-except Exception:
-    logging.warning("Redis ulanmadi, MemoryStorage ishlatilmoqda")
+if REDIS_URL:
+    try:
+        storage = RedisStorage.from_url(REDIS_URL)
+        logging.info("Redis storage ishlatilmoqda")
+    except Exception:
+        logging.warning("Redis ulanmadi, MemoryStorage ishlatilmoqda")
+        storage = MemoryStorage()
+else:
+    logging.info("REDIS_URL yo'q, MemoryStorage ishlatilmoqda")
     storage = MemoryStorage()
 
 dp = Dispatcher(storage=storage)
