@@ -16,7 +16,7 @@ import os
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = os.getenv("8737332441:AAE6X4MabWVM__8a2FMZJMXwXJRWeV1K-xs")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 
