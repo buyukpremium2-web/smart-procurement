@@ -10,24 +10,42 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.redis import RedisStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 import httpx
 import os
 
 logging.basicConfig(level=logging.INFO)
 
-BOT_TOKEN = os.getenv("8737332441:AAE6X4MabWVM__8a2FMZJMXwXJRWeV1K-xs")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://backend:8000")
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+REDIS_URL = os.getenv("REDIS_URL")
 
-bot = Bot(token=8737332441:AAE6X4MabWVM__8a2FMZJMXwXJRWeV1K-xs)
-storage = RedisStorage.from_url(REDIS_URL)
+if not BOT_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN environment variable is not set!")
+
+bot = Bot(token=BOT_TOKEN)
+
+if REDIS_URL:
+    try:
+        storage = RedisStorage.from_url(REDIS_URL)
+        logging.info("Redis storage ishlatilmoqda")
+    except Exception:
+        logging.warning("Redis ulanmadi, MemoryStorage ishlatilmoqda")
+        storage = MemoryStorage()
+else:
+    logging.info("REDIS_URL yo'q, MemoryStorage ishlatilmoqda")
+    storage = MemoryStorage()
+
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
-# User sessions stored in Redis via FSM
-user_tokens = {}  # telegram_id -> jwt_token
+user_tokens = {}
+user_roles = {}
 
 
 # =====================
@@ -49,6 +67,12 @@ class ExtraOrderStates(StatesGroup):
     choosing_product = State()
     entering_quantity = State()
     delivery_date = State()
+
+
+class ReceiveStates(StatesGroup):
+    choosing_order = State()
+    entering_quantity = State()
+    confirming = State()
 
 
 # =====================
@@ -90,25 +114,46 @@ def main_menu_keyboard(role: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=kb_buttons, resize_keyboard=True)
 
 
+# =====================
+# API HELPERS
+# =====================
 async def api_get(endpoint: str, token: str):
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{BACKEND_URL}/api/v1/{endpoint}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0
-        )
-        return resp.json() if resp.status_code == 200 else None
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{BACKEND_URL}/api/v1/{endpoint}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0
+            )
+            return resp.json() if resp.status_code == 200 else None
+    except Exception as e:
+        logging.error(f"API GET xatolik: {e}")
+        return None
 
 
-async def api_post(endpoint: str, data: dict, token: str):
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BACKEND_URL}/api/v1/{endpoint}",
-            json=data,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10.0
-        )
-        return resp.json(), resp.status_code
+async def api_post(endpoint: str, data: dict, token: str = None):
+    try:
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{BACKEND_URL}/api/v1/{endpoint}",
+                json=data,
+                headers=headers,
+                timeout=10.0
+            )
+            return resp.json(), resp.status_code
+    except Exception as e:
+        logging.error(f"API POST xatolik: {e}")
+        return None, 500
+
+
+# =====================
+# AUTH CHECK HELPER
+# =====================
+def check_auth(tg_id: int) -> bool:
+    return tg_id in user_tokens
 
 
 # =====================
@@ -117,7 +162,7 @@ async def api_post(endpoint: str, data: dict, token: str):
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     tg_id = message.from_user.id
-    if tg_id in user_tokens:
+    if check_auth(tg_id):
         user_data = await api_get("auth/me", user_tokens[tg_id])
         if user_data:
             await message.answer(
@@ -150,20 +195,29 @@ async def process_password(message: Message, state: FSMContext):
     username = data.get("username")
     password = message.text
 
-    await message.delete()  # Delete password from chat
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
-    # Authenticate with backend
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{BACKEND_URL}/api/v1/auth/login",
-            data={"username": username, "password": password},
-        )
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{BACKEND_URL}/api/v1/auth/login",
+                data={"username": username, "password": password},
+                timeout=10.0
+            )
+    except Exception:
+        await state.clear()
+        await message.answer("❌ Server bilan bog'lanishda xatolik. Keyinroq urinib ko'ring.")
+        return
 
     if resp.status_code == 200:
         result = resp.json()
         token = result["access_token"]
         user = result["user"]
         user_tokens[message.from_user.id] = token
+        user_roles[message.from_user.id] = user["role"]
         await state.clear()
 
         await message.answer(
@@ -176,15 +230,149 @@ async def process_password(message: Message, state: FSMContext):
     else:
         await state.clear()
         await message.answer(
-            "❌ Login yoki parol noto'g'ri. Qaytadan urinib ko'ring.\n"
+            "❌ Login yoki parol noto'g'ri.\n"
             "/start buyrug'ini yuboring."
         )
 
 
+# =====================
+# SOTUV KIRITISH
+# =====================
+@router.message(F.text == "📦 Sotuv kiritish")
+async def start_sale(message: Message, state: FSMContext):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    products = await api_get("products/", user_tokens[tg_id])
+    if not products:
+        await message.answer("❌ Mahsulotlar ro'yxatini olishda xatolik")
+        return
+
+    text = "📦 *Sotuv kiritish*\n\nMahsulot nomini kiriting:\n\n"
+    for i, p in enumerate(products[:15], 1):
+        text += f"{i}. {p['name']} ({p.get('unit', 'kg')})\n"
+
+    await state.update_data(products=products)
+    await state.set_state(SaleStates.choosing_product)
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(SaleStates.choosing_product)
+async def sale_product_chosen(message: Message, state: FSMContext):
+    await state.update_data(product_name=message.text)
+    await state.set_state(SaleStates.entering_quantity)
+    await message.answer("📏 Miqdorni kiriting (kg/dona):")
+
+
+@router.message(SaleStates.entering_quantity)
+async def sale_quantity_entered(message: Message, state: FSMContext):
+    try:
+        qty = float(message.text.replace(",", "."))
+        await state.update_data(quantity=qty)
+        await state.set_state(SaleStates.entering_price)
+        await message.answer("💰 Narxni kiriting (so'm):")
+    except ValueError:
+        await message.answer("❌ Raqam kiriting. Masalan: 5.5")
+
+
+@router.message(SaleStates.entering_price)
+async def sale_price_entered(message: Message, state: FSMContext):
+    tg_id = message.from_user.id
+    try:
+        price = float(message.text.replace(",", ".").replace(" ", ""))
+        data = await state.get_data()
+
+        sale_data = {
+            "product_name": data["product_name"],
+            "quantity": data["quantity"],
+            "price_per_unit": price,
+            "total_amount": data["quantity"] * price,
+        }
+
+        result, status = await api_post("sales/", sale_data, user_tokens[tg_id])
+        await state.clear()
+
+        if status in (200, 201):
+            await message.answer(
+                f"✅ *Sotuv saqlandi!*\n\n"
+                f"📦 Mahsulot: {sale_data['product_name']}\n"
+                f"📏 Miqdor: {sale_data['quantity']}\n"
+                f"💰 Jami: {sale_data['total_amount']:,.0f} so'm",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer("❌ Sotuvni saqlashda xatolik yuz berdi")
+    except ValueError:
+        await message.answer("❌ Raqam kiriting. Masalan: 15000")
+
+
+# =====================
+# QO'SHIMCHA ZAKAZ
+# =====================
+@router.message(F.text == "📋 Qo'shimcha zakaz")
+async def start_extra_order(message: Message, state: FSMContext):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    await state.set_state(ExtraOrderStates.customer_name)
+    await message.answer("👤 Mijoz ismini kiriting:")
+
+
+@router.message(ExtraOrderStates.customer_name)
+async def extra_order_customer(message: Message, state: FSMContext):
+    await state.update_data(customer_name=message.text)
+    await state.set_state(ExtraOrderStates.choosing_product)
+    await message.answer("📦 Mahsulot nomini kiriting:")
+
+
+@router.message(ExtraOrderStates.choosing_product)
+async def extra_order_product(message: Message, state: FSMContext):
+    await state.update_data(product_name=message.text)
+    await state.set_state(ExtraOrderStates.entering_quantity)
+    await message.answer("📏 Miqdorni kiriting:")
+
+
+@router.message(ExtraOrderStates.entering_quantity)
+async def extra_order_quantity(message: Message, state: FSMContext):
+    try:
+        qty = float(message.text.replace(",", "."))
+        data = await state.get_data()
+        tg_id = message.from_user.id
+
+        order_data = {
+            "customer_name": data["customer_name"],
+            "product_name": data["product_name"],
+            "quantity": qty,
+        }
+
+        result, status = await api_post("sales/extra-order", order_data, user_tokens[tg_id])
+        await state.clear()
+
+        if status in (200, 201):
+            await message.answer(
+                f"✅ *Qo'shimcha zakaz saqlandi!*\n\n"
+                f"👤 Mijoz: {order_data['customer_name']}\n"
+                f"📦 Mahsulot: {order_data['product_name']}\n"
+                f"📏 Miqdor: {qty}",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer("❌ Zakazni saqlashda xatolik")
+    except ValueError:
+        await message.answer("❌ Raqam kiriting")
+
+
+# =====================
+# AI TAVSIYALAR
+# =====================
 @router.message(F.text == "🤖 AI tavsiyalar")
 async def ai_recommendations(message: Message):
     tg_id = message.from_user.id
-    if tg_id not in user_tokens:
+    if not check_auth(tg_id):
         await message.answer("❌ Avval tizimga kiring: /start")
         return
 
@@ -196,7 +384,7 @@ async def ai_recommendations(message: Message):
         return
 
     text = "🤖 *AI Tavsiyalari*\n\n"
-    for item in data[:10]:  # Top 10
+    for item in data[:10]:
         emoji = "🔴" if item["recommended_order"] > 0 else "🟢"
         text += (
             f"{emoji} *{item['product_name']}*\n"
@@ -212,10 +400,13 @@ async def ai_recommendations(message: Message):
     await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
+# =====================
+# BUGUNGI SOTUVLAR
+# =====================
 @router.message(F.text == "📊 Bugungi sotuvlar")
 async def today_sales(message: Message):
     tg_id = message.from_user.id
-    if tg_id not in user_tokens:
+    if not check_auth(tg_id):
         await message.answer("❌ Avval tizimga kiring: /start")
         return
 
@@ -224,20 +415,46 @@ async def today_sales(message: Message):
         await message.answer("❌ Ma'lumot olishda xatolik")
         return
 
-    text = f"📊 *Bugungi Sotuvlar*\n\n"
+    text = "📊 *Bugungi Sotuvlar*\n\n"
     text += f"Jami tranzaksiyalar: {data['count']}\n"
     text += f"Jami tushum: *{data['total_revenue']:,.0f} so'm*\n\n"
 
-    for sale in data['sales'][:10]:
-        text += f"• {sale['product_name']}: {sale['quantity']} {sale.get('unit','kg')} — {sale['total_amount']:,.0f} so'm\n"
+    for sale in data.get('sales', [])[:10]:
+        text += f"• {sale['product_name']}: {sale['quantity']} — {sale['total_amount']:,.0f} so'm\n"
 
     await message.answer(text, parse_mode="Markdown")
 
 
+# =====================
+# OMBOR HOLATI
+# =====================
+@router.message(F.text == "🏪 Ombor holati")
+async def warehouse_status(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    data = await api_get("products/stock", user_tokens[tg_id])
+    if not data:
+        await message.answer("❌ Ombor ma'lumotlarini olishda xatolik")
+        return
+
+    text = "🏪 *Ombor Holati*\n\n"
+    for item in data[:15]:
+        emoji = "🔴" if item.get("stock", 0) < item.get("min_stock", 10) else "🟢"
+        text += f"{emoji} {item['name']}: *{item.get('stock', 0)}* {item.get('unit', 'kg')}\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+# =====================
+# ZAKAZLARNI TASDIQLASH
+# =====================
 @router.message(F.text == "✅ Zakazlarni tasdiqlash")
 async def pending_approvals(message: Message):
     tg_id = message.from_user.id
-    if tg_id not in user_tokens:
+    if not check_auth(tg_id):
         await message.answer("❌ Avval tizimga kiring: /start")
         return
 
@@ -265,7 +482,7 @@ async def pending_approvals(message: Message):
 async def approve_order(callback: CallbackQuery):
     order_id = callback.data.split("_")[1]
     tg_id = callback.from_user.id
-    if tg_id not in user_tokens:
+    if not check_auth(tg_id):
         await callback.answer("❌ Avval tizimga kiring")
         return
 
@@ -285,7 +502,7 @@ async def approve_order(callback: CallbackQuery):
 async def reject_order(callback: CallbackQuery):
     order_id = callback.data.split("_")[1]
     tg_id = callback.from_user.id
-    if tg_id not in user_tokens:
+    if not check_auth(tg_id):
         await callback.answer("❌ Avval tizimga kiring")
         return
 
@@ -301,14 +518,156 @@ async def reject_order(callback: CallbackQuery):
         await callback.answer("❌ Xatolik yuz berdi")
 
 
+# =====================
+# TOVAR QABUL QILISH
+# =====================
+@router.message(F.text == "📥 Tovar qabul qilish")
+async def receive_goods(message: Message, state: FSMContext):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    data = await api_get("procurement/?status=approved", user_tokens[tg_id])
+    if not data:
+        await message.answer("📭 Qabul qilish uchun tovar yo'q")
+        return
+
+    text = "📥 *Qabul qilinishi kerak bo'lgan tovarlar:*\n\n"
+    keyboard_buttons = []
+    for order in data[:10]:
+        text += f"• {order['order_number']} — {order.get('total_estimated_cost', 0):,.0f} so'm\n"
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                text=f"📥 {order['order_number']}",
+                callback_data=f"receive_{order['id']}"
+            )
+        ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("receive_"))
+async def confirm_receive(callback: CallbackQuery):
+    order_id = callback.data.split("_")[1]
+    tg_id = callback.from_user.id
+    if not check_auth(tg_id):
+        await callback.answer("❌ Avval tizimga kiring")
+        return
+
+    data, status = await api_post(
+        f"procurement/{order_id}/receive",
+        {"notes": "Telegram orqali qabul qilindi"},
+        user_tokens[tg_id]
+    )
+    if status == 200:
+        await callback.message.edit_text(f"✅ Tovar qabul qilindi!\n{callback.message.text}")
+        await callback.answer("✅ Muvaffaqiyatli qabul qilindi")
+    else:
+        await callback.answer("❌ Xatolik yuz berdi")
+
+
+# =====================
+# ADMIN HANDLERS
+# =====================
+@router.message(F.text == "📊 Dashboard")
+async def admin_dashboard(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    sales = await api_get("sales/today", user_tokens[tg_id])
+    stock = await api_get("products/stock", user_tokens[tg_id])
+
+    text = "📊 *Admin Dashboard*\n\n"
+    if sales:
+        text += f"💰 Bugungi tushum: *{sales.get('total_revenue', 0):,.0f} so'm*\n"
+        text += f"📦 Tranzaksiyalar: {sales.get('count', 0)}\n\n"
+    if stock:
+        low = [p for p in stock if p.get('current_stock', 0) < p.get('minimum_stock', 10)]
+        text += f"🔴 Kam qolgan mahsulotlar: {len(low)} ta\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "👥 Foydalanuvchilar")
+async def admin_users(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    data = await api_get("users/", user_tokens[tg_id])
+    if not data:
+        await message.answer("❌ Foydalanuvchilar ro'yxatini olishda xatolik")
+        return
+
+    text = "👥 *Foydalanuvchilar*\n\n"
+    for user in data[:20]:
+        emoji = "✅" if user.get('is_active') else "❌"
+        text += f"{emoji} *{user['full_name']}* — `{user['role']}`\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "🤖 AI tahlil")
+async def admin_ai(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    await message.answer("🔄 AI tahlil yuklanmoqda...")
+    data = await api_get("ai/latest", user_tokens[tg_id])
+
+    if not data:
+        await message.answer("❌ AI tavsiyalar topilmadi.")
+        return
+
+    text = "🤖 *AI Tahlil*\n\n"
+    for item in data[:10]:
+        emoji = "🔴" if item.get("recommended_order", 0) > 0 else "🟢"
+        text += f"{emoji} *{item['product_name']}*: {item.get('recommended_order', 0):.1f} {item.get('unit', 'kg')}\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "⚙️ Sozlamalar")
+async def admin_settings(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    await message.answer(
+        "⚙️ *Sozlamalar*\n\n"
+        "Tizim versiyasi: 1.0.0\n"
+        "Status: Faol ✅",
+        parse_mode="Markdown"
+    )
+
+
+# =====================
+# CHIQISH
+# =====================
 @router.message(F.text == "🚪 Chiqish")
 async def logout(message: Message, state: FSMContext):
     user_tokens.pop(message.from_user.id, None)
+    user_roles.pop(message.from_user.id, None)
     await state.clear()
-    await message.answer("👋 Tizimdan chiqdingiz. Qaytib kirish uchun /start")
+    await message.answer(
+        "👋 Tizimdan chiqdingiz.\n"
+        "Qaytib kirish uchun /start bosing."
+    )
 
 
+# =====================
+# MAIN
+# =====================
 async def main():
+    logging.info("Bot ishga tushmoqda...")
     await dp.start_polling(bot)
 
 
