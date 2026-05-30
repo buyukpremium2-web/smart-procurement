@@ -569,7 +569,85 @@ async def confirm_receive(callback: CallbackQuery):
     else:
         await callback.answer("❌ Xatolik yuz berdi")
 
+# =====================
+# ADMIN HANDLERS
+# =====================
+@router.message(F.text == "📊 Dashboard")
+async def admin_dashboard(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
 
+    sales = await api_get("sales/today", user_tokens[tg_id])
+    stock = await api_get("products/stock", user_tokens[tg_id])
+
+    text = "📊 *Admin Dashboard*\n\n"
+    if sales:
+        text += f"💰 Bugungi tushum: *{sales.get('total_revenue', 0):,.0f} so'm*\n"
+        text += f"📦 Tranzaksiyalar: {sales.get('count', 0)}\n\n"
+    if stock:
+        low = [p for p in stock if p.get('current_stock', 0) < p.get('minimum_stock', 10)]
+        text += f"🔴 Kam qolgan mahsulotlar: {len(low)} ta\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "👥 Foydalanuvchilar")
+async def admin_users(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    data = await api_get("users/", user_tokens[tg_id])
+    if not data:
+        await message.answer("❌ Foydalanuvchilar ro'yxatini olishda xatolik")
+        return
+
+    text = "👥 *Foydalanuvchilar*\n\n"
+    for user in data[:20]:
+        emoji = "✅" if user.get('is_active') else "❌"
+        text += f"{emoji} *{user['full_name']}* — `{user['role']}`\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "🤖 AI tahlil")
+async def admin_ai(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    await message.answer("🔄 AI tahlil yuklanmoqda...")
+    data = await api_get("ai/latest", user_tokens[tg_id])
+
+    if not data:
+        await message.answer("❌ AI tavsiyalar topilmadi.")
+        return
+
+    text = "🤖 *AI Tahlil*\n\n"
+    for item in data[:10]:
+        emoji = "🔴" if item.get("recommended_order", 0) > 0 else "🟢"
+        text += f"{emoji} *{item['product_name']}*: {item.get('recommended_order', 0):.1f} {item.get('unit', 'kg')}\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(F.text == "⚙️ Sozlamalar")
+async def admin_settings(message: Message):
+    tg_id = message.from_user.id
+    if not check_auth(tg_id):
+        await message.answer("❌ Avval tizimga kiring: /start")
+        return
+
+    await message.answer(
+        "⚙️ *Sozlamalar*\n\n"
+        "Tizim versiyasi: 1.0.0\n"
+        "Status: Faol ✅",
+        parse_mode="Markdown"
+    )
 # =====================
 # CHIQISH
 # =====================
