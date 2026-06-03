@@ -1,4 +1,4 @@
-import uuid
+[03.06.2026 13:58] Farrux: import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Date, Numeric,
@@ -37,7 +37,7 @@ class MovementType(str, enum.Enum):
 
 
 class User(Base):
-    __tablename__ = "users"
+    tablename = "users"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     telegram_id = Column(BigInteger, unique=True, nullable=True)
     username = Column(String(100), unique=True, nullable=False)
@@ -51,7 +51,7 @@ class User(Base):
 
 
 class Category(Base):
-    __tablename__ = "categories"
+    tablename = "categories"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(100), nullable=False)
     description = Column(Text)
@@ -59,7 +59,7 @@ class Category(Base):
 
 
 class Supplier(Base):
-    __tablename__ = "suppliers"
+    tablename = "suppliers"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(200), nullable=False)
     phone = Column(String(20))
@@ -70,7 +70,7 @@ class Supplier(Base):
 
 
 class Product(Base):
-    __tablename__ = "products"
+    tablename = "products"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(200), nullable=False)
     category_id = Column(UUID(as_uuid=True), ForeignKey("categories.id"))
@@ -91,7 +91,7 @@ class Product(Base):
 
 class InventorySession(Base):
     """Admin tomonidan kunning boshida boshlangich ostatka kiritiladi"""
-    __tablename__ = "inventory_sessions"
+    tablename = "inventory_sessions"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_date = Column(Date, nullable=False)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
@@ -101,10 +101,8 @@ class InventorySession(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     product = relationship("Product")
     admin = relationship("User")
-
-
-class Sale(Base):
-    __tablename__ = "sales"
+[03.06.2026 13:58] Farrux: class Sale(Base):
+    tablename = "sales"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     quantity = Column(Numeric(10, 2), nullable=False)
@@ -119,7 +117,7 @@ class Sale(Base):
 
 class WasteRecord(Base):
     """Sotuvchi tomonidan buzilgan/chiqindi mahsulot kiritiladi"""
-    __tablename__ = "waste_records"
+    tablename = "waste_records"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     quantity = Column(Numeric(10, 2), nullable=False)
@@ -132,7 +130,7 @@ class WasteRecord(Base):
 
 
 class ExtraOrder(Base):
-    __tablename__ = "extra_orders"
+    tablename = "extra_orders"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     customer_name = Column(String(200), nullable=False)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
@@ -147,7 +145,7 @@ class ExtraOrder(Base):
 
 
 class AIForecast(Base):
-    __tablename__ = "ai_forecasts"
+    tablename = "ai_forecasts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     forecast_date = Column(Date, nullable=False)
@@ -163,7 +161,7 @@ class AIForecast(Base):
 
 
 class ProcurementOrder(Base):
-    __tablename__ = "procurement_orders"
+    tablename = "procurement_orders"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_number = Column(String(50), unique=True, nullable=False)
     status = Column(SAEnum(ProcurementStatus), nullable=False, default=ProcurementStatus.draft)
@@ -181,10 +179,8 @@ class ProcurementOrder(Base):
     items = relationship("ProcurementItem", back_populates="order", cascade="all, delete-orphan")
     buyer = relationship("User", foreign_keys=[buyer_id])
     warehouse_manager = relationship("User", foreign_keys=[warehouse_manager_id])
-
-
-class ProcurementItem(Base):
-    __tablename__ = "procurement_items"
+[03.06.2026 13:58] Farrux: class ProcurementItem(Base):
+    tablename = "procurement_items"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     order_id = Column(UUID(as_uuid=True), ForeignKey("procurement_orders.id", ondelete="CASCADE"), nullable=False)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
@@ -201,7 +197,7 @@ class ProcurementItem(Base):
 
 
 class StockMovement(Base):
-    __tablename__ = "stock_movements"
+    tablename = "stock_movements"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     product_id = Column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False)
     movement_type = Column(SAEnum(MovementType), nullable=False)
@@ -216,7 +212,7 @@ class StockMovement(Base):
 
 
 class Notification(Base):
-    __tablename__ = "notifications"
+    tablename = "notifications"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     type = Column(String(50), nullable=False)
