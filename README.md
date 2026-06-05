@@ -1,4 +1,4 @@
-# 🥦 Smart AI Procurement System
+# 🥦 Buyuk Premium System
 > Meva-Sabzavot Do'konlari uchun Sun'iy Intellekt asosida Zakupka Boshqaruv Tizimi
 
 ---
