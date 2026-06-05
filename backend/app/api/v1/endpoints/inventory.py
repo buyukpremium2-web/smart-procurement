@@ -1,12 +1,13 @@
 """
 Inventory Module:
-- Admin: boshlangich ostatka kiritish (inventory_sessions)
-- Sotuvchi: chiqindi/buzilgan kiritish (waste_records)
-- Hisobot: ostatka = boshlangich + kelgan - sotilgan - chiqindi
+- Boshlangich ostatka BIR MARTA kiritiladi
+- Keyin har kun: kechagi qoldiq = bugungi boshlangich (avtomatik)
+- Formula: ostatka = boshlangich + kelgan - sotilgan - chiqindi
+- Inventarizatsiya: qoldiqni qo'lda to'g'rilash (Admin + Tovaroved)
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func
 from datetime import date, timedelta
 from typing import Optional, List
 from pydantic import BaseModel
@@ -16,15 +17,15 @@ from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
 from app.models.models import (
     InventorySession, WasteRecord, Sale, Product,
-    StockMovement, MovementType, User, ProcurementItem, ProcurementStatus, ProcurementOrder
+    StockMovement, MovementType, User, ProcurementItem,
+    ProcurementStatus, ProcurementOrder
 )
 
 router = APIRouter()
 
 
-# ─── SCHEMAS ───────────────────────────────────────────
 class InventoryInput(BaseModel):
-    items: List[dict]   # [{product_id, initial_stock, notes?}]
+    items: List[dict]
     session_date: Optional[date] = None
     notes: Optional[str] = None
 
@@ -36,23 +37,28 @@ class WasteInput(BaseModel):
     waste_date: Optional[date] = None
 
 
+class AdjustInput(BaseModel):
+    product_id: UUID
+    actual_stock: float   # haqiqiy sanab chiqilgan qoldiq
+    notes: Optional[str] = None
+
+
 # ─── HELPERS ───────────────────────────────────────────
-async def calc_stock_for_date(db: AsyncSession, product_id: str, target_date: date) -> dict:
-    """
-    Formula: ostatka = boshlangich + kelgan - sotilgan - chiqindi
-    """
-    # 1. Boshlangich (o'sha kun admin kiritgan)
-    inv_result = await db.execute(
-        select(func.coalesce(func.sum(InventorySession.initial_stock), 0))
+async def get_initial_for_date(db: AsyncSession, product_id: str, target_date: date) -> Optional[float]:
+    """O'sha kun uchun boshlangich ostatka bormi?"""
+    r = await db.execute(
+        select(func.sum(InventorySession.initial_stock))
         .where(
             InventorySession.product_id == product_id,
             InventorySession.session_date == target_date
         )
     )
-    initial = float(inv_result.scalar() or 0)
+    val = r.scalar()
+    return float(val) if val is not None else None
 
-    # 2. Kelgan tovar (o'sha kun completed procurement)
-    received_result = await db.execute(
+
+async def get_received(db: AsyncSession, product_id: str, target_date: date) -> float:
+    r = await db.execute(
         select(func.coalesce(func.sum(ProcurementItem.received_qty), 0))
         .join(ProcurementOrder, ProcurementItem.order_id == ProcurementOrder.id)
         .where(
@@ -61,40 +67,95 @@ async def calc_stock_for_date(db: AsyncSession, product_id: str, target_date: da
             func.date(ProcurementOrder.completed_at) == target_date
         )
     )
-    received = float(received_result.scalar() or 0)
+    return float(r.scalar() or 0)
 
-    # 3. Sotilgan
-    sold_result = await db.execute(
+
+async def get_sold(db: AsyncSession, product_id: str, target_date: date) -> float:
+    r = await db.execute(
         select(func.coalesce(func.sum(Sale.quantity), 0))
         .where(Sale.product_id == product_id, Sale.sale_date == target_date)
     )
-    sold = float(sold_result.scalar() or 0)
+    return float(r.scalar() or 0)
 
-    # 4. Chiqindi
-    waste_result = await db.execute(
+
+async def get_waste(db: AsyncSession, product_id: str, target_date: date) -> float:
+    r = await db.execute(
         select(func.coalesce(func.sum(WasteRecord.quantity), 0))
         .where(WasteRecord.product_id == product_id, WasteRecord.waste_date == target_date)
     )
-    waste = float(waste_result.scalar() or 0)
+    return float(r.scalar() or 0)
+
+
+async def calc_stock_for_date(db: AsyncSession, product_id: str, target_date: date) -> dict:
+    """
+    Boshlangich ostatkani aniqlash:
+    1. Agar o'sha kun uchun kiritilган bo'lsa - shuni olamiz
+    2. Aks holda - kechagi qoldiqni hisoblaymiz (avtomatik o'tkazish)
+    """
+    initial = await get_initial_for_date(db, product_id, target_date)
+
+    if initial is None:
+        # Kechagi qoldiqni topamiz (rekursiv emas, oxirgi kiritilган kundan boshlab)
+        initial = await _compute_carryover(db, product_id, target_date)
+
+    received = await get_received(db, product_id, target_date)
+    sold = await get_sold(db, product_id, target_date)
+    waste = await get_waste(db, product_id, target_date)
 
     remaining = initial + received - sold - waste
     return {
-        "initial": initial,
-        "received": received,
-        "sold": sold,
-        "waste": waste,
-        "remaining": max(0, remaining)
+        "initial": round(initial, 2),
+        "received": round(received, 2),
+        "sold": round(sold, 2),
+        "waste": round(waste, 2),
+        "remaining": round(max(0, remaining), 2),
     }
 
 
-# ─── ADMIN: BOSHLANGICH OSTATKA ───────────────────────
+async def _compute_carryover(db: AsyncSession, product_id: str, target_date: date) -> float:
+    """
+    Oxirgi boshlangich kiritilган kundan target_date gacha qoldiqni hisoblab keladi.
+    Maksimal 60 kun orqaga qaraydi.
+    """
+    # Oxirgi boshlangich kiritilган kunni topamiz (target_date dan oldin)
+    r = await db.execute(
+        select(InventorySession.session_date, func.sum(InventorySession.initial_stock).label("init"))
+        .where(
+            InventorySession.product_id == product_id,
+            InventorySession.session_date < target_date
+        )
+        .group_by(InventorySession.session_date)
+        .order_by(InventorySession.session_date.desc())
+        .limit(1)
+    )
+    row = r.first()
+
+    if not row:
+        return 0.0  # Hech qachon kiritilmagan
+
+    last_date = row.session_date
+    running = float(row.init)
+
+    # last_date dan target_date gacha har kun: + kelgan - sotilgan - chiqindi
+    cur = last_date
+    while cur < target_date:
+        received = await get_received(db, product_id, cur)
+        sold = await get_sold(db, product_id, cur)
+        waste = await get_waste(db, product_id, cur)
+        running = max(0, running + received - sold - waste)
+        cur = cur + timedelta(days=1)
+
+    return running
+
+
+# ─── BOSHLANGICH OSTATKA (Admin) ──────────────────────
 @router.post("/initial-stock")
 async def set_initial_stock(
     data: InventoryInput,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles("admin"))
 ):
-    """Admin: kunning boshida boshlangich ostatka kiritadi"""
+    """Admin: boshlangich ostatka kiritadi (odatda faqat bir marta - boshda)"""
     session_date = data.session_date or date.today()
     created = 0
 
@@ -104,7 +165,6 @@ async def set_initial_stock(
         if not product_id or initial < 0:
             continue
 
-        # Avvalgi yozuv bo'lsa yangilaymiz
         existing = await db.execute(
             select(InventorySession).where(
                 InventorySession.product_id == product_id,
@@ -114,39 +174,21 @@ async def set_initial_stock(
         existing_rec = existing.scalar_one_or_none()
 
         if existing_rec:
-            old_stock = float(existing_rec.initial_stock)
             existing_rec.initial_stock = initial
             existing_rec.notes = item.get("notes")
         else:
-            old_stock = None
-            rec = InventorySession(
+            db.add(InventorySession(
                 session_date=session_date,
                 product_id=product_id,
                 initial_stock=initial,
                 notes=item.get("notes"),
                 admin_id=current_user.id,
-            )
-            db.add(rec)
+            ))
 
-        # Mahsulot current_stock ni yangilaymiz (bugungi formula bilan)
         prod_r = await db.execute(select(Product).where(Product.id == product_id))
         product = prod_r.scalar_one_or_none()
         if product:
-            stock_data = await calc_stock_for_date(db, str(product_id), session_date)
-            stock_before = float(product.current_stock)
-            product.current_stock = stock_data["remaining"]
-
-            # Movement log
-            db.add(StockMovement(
-                product_id=product_id,
-                movement_type=MovementType.initial,
-                quantity=initial,
-                stock_before=stock_before,
-                stock_after=stock_data["remaining"],
-                reference_type="inventory_session",
-                user_id=current_user.id,
-                notes=f"Boshlangich ostatka: {session_date}"
-            ))
+            product.current_stock = initial
         created += 1
 
     await db.commit()
@@ -157,9 +199,8 @@ async def set_initial_stock(
 async def get_initial_stock(
     session_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_roles("admin"))
+    current_user: User = Depends(get_current_user)
 ):
-    """Admin: boshlangich ostatka ro'yxati"""
     target = session_date or date.today()
     result = await db.execute(
         select(InventorySession, Product.name, Product.unit)
@@ -182,34 +223,40 @@ async def get_initial_stock(
     ]
 
 
-# ─── SOTUVCHI: CHIQINDI ────────────────────────────────
+@router.get("/has-initial")
+async def has_any_initial(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Umuman boshlangich ostatka kiritilganmi?"""
+    r = await db.execute(select(func.count(InventorySession.id)))
+    count = r.scalar() or 0
+    return {"has_initial": count > 0, "count": count}
+
+
+# ─── CHIQINDI (Sotuvchi) ──────────────────────────────
 @router.post("/waste")
 async def record_waste(
     data: WasteInput,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles("seller", "admin"))
 ):
-    """Sotuvchi: buzilgan/chiqindi mahsulot kiritadi"""
     prod_r = await db.execute(select(Product).where(Product.id == data.product_id))
     product = prod_r.scalar_one_or_none()
     if not product:
         raise HTTPException(status_code=404, detail="Mahsulot topilmadi")
 
     waste_date = data.waste_date or date.today()
-
-    waste = WasteRecord(
+    db.add(WasteRecord(
         product_id=data.product_id,
         quantity=data.quantity,
         reason=data.reason,
         seller_id=current_user.id,
         waste_date=waste_date,
-    )
-    db.add(waste)
+    ))
 
-    # current_stock yangilash
     stock_before = float(product.current_stock)
     stock_data = await calc_stock_for_date(db, str(data.product_id), waste_date)
-    # waste hali saqlanmagan, qo'lda ayiramiz
     new_stock = max(0, stock_data["remaining"] - data.quantity)
     product.current_stock = new_stock
 
@@ -224,13 +271,7 @@ async def record_waste(
         notes=data.reason or "Chiqindi"
     ))
     await db.commit()
-
-    return {
-        "message": "Chiqindi kiritildi",
-        "product": product.name,
-        "waste_qty": data.quantity,
-        "remaining_stock": new_stock
-    }
+    return {"message": "Chiqindi kiritildi", "product": product.name, "remaining_stock": new_stock}
 
 
 @router.get("/waste")
@@ -239,7 +280,6 @@ async def list_waste(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Chiqindi ro'yxati"""
     target = waste_date or date.today()
     result = await db.execute(
         select(WasteRecord, Product.name, Product.unit, User.full_name)
@@ -263,27 +303,90 @@ async def list_waste(
     ]
 
 
-# ─── HISOBOT: OSTATKA HISOBI ──────────────────────────
+# ─── INVENTARIZATSIYA (Admin + Tovaroved) ─────────────
+@router.post("/adjust")
+async def adjust_stock(
+    data: AdjustInput,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "goods_receiver"))
+):
+    """
+    Inventarizatsiya: haqiqiy qoldiqni sanab, tizimni to'g'rilash.
+    Bugungi sana uchun yangi boshlangich sifatida yoziladi.
+    """
+    prod_r = await db.execute(select(Product).where(Product.id == data.product_id))
+    product = prod_r.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Mahsulot topilmadi")
+
+    today = date.today()
+    stock_before = float(product.current_stock)
+
+    # Bugungi boshlangich yozuvni yangilaymiz / yaratamiz
+    existing = await db.execute(
+        select(InventorySession).where(
+            InventorySession.product_id == data.product_id,
+            InventorySession.session_date == today
+        )
+    )
+    rec = existing.scalar_one_or_none()
+
+    # Haqiqiy qoldiq = yangi boshlangich, lekin bugungi sotilgan/chiqindini qaytaramiz
+    sold = await get_sold(db, str(data.product_id), today)
+    waste = await get_waste(db, str(data.product_id), today)
+    # Inventarizatsiya = haqiqiy ombor, bugungi harakatlardan oldin
+    new_initial = data.actual_stock + sold + waste
+
+    if rec:
+        rec.initial_stock = new_initial
+        rec.notes = f"Inventarizatsiya: {data.notes or ''}"
+    else:
+        db.add(InventorySession(
+            session_date=today,
+            product_id=data.product_id,
+            initial_stock=new_initial,
+            notes=f"Inventarizatsiya: {data.notes or ''}",
+            admin_id=current_user.id,
+        ))
+
+    product.current_stock = data.actual_stock
+
+    db.add(StockMovement(
+        product_id=data.product_id,
+        movement_type=MovementType.adjustment,
+        quantity=abs(data.actual_stock - stock_before),
+        stock_before=stock_before,
+        stock_after=data.actual_stock,
+        reference_type="inventory_adjustment",
+        user_id=current_user.id,
+        notes=f"Inventarizatsiya: {data.notes or ''}"
+    ))
+    await db.commit()
+
+    return {
+        "message": "Inventarizatsiya bajarildi",
+        "product": product.name,
+        "old_stock": stock_before,
+        "new_stock": data.actual_stock,
+    }
+
+
+# ─── HISOBOTLAR ───────────────────────────────────────
 @router.get("/report/daily")
 async def daily_stock_report(
     report_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Kunlik hisobot: barcha mahsulotlar bo'yicha
-    boshlangich + kelgan - sotilgan - chiqindi = ostatka
-    """
     target = report_date or date.today()
-
     products_r = await db.execute(
         select(Product).where(Product.is_active == True).order_by(Product.name)
     )
     products = products_r.scalars().all()
 
     report = []
-    total_sold_value = 0
-    total_waste_value = 0
+    total_sold_value = 0.0
+    total_waste_value = 0.0
 
     for p in products:
         stock = await calc_stock_for_date(db, str(p.id), target)
@@ -327,7 +430,6 @@ async def range_stock_report(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Davr bo'yicha hisobot (admin va bozorchi uchun)"""
     if (date_to - date_from).days > 31:
         raise HTTPException(status_code=400, detail="Maksimal 31 kun")
 
@@ -336,7 +438,6 @@ async def range_stock_report(
     )
     products = products_r.scalars().all()
 
-    # Sotilgan miqdor va qiymat
     sold_result = await db.execute(
         select(
             Sale.product_id,
@@ -348,7 +449,6 @@ async def range_stock_report(
     )
     sold_map = {str(r.product_id): {"qty": float(r.total_qty), "value": float(r.total_value)} for r in sold_result}
 
-    # Chiqindi miqdori
     waste_result = await db.execute(
         select(WasteRecord.product_id, func.sum(WasteRecord.quantity).label("total"))
         .where(WasteRecord.waste_date.between(date_from, date_to))
