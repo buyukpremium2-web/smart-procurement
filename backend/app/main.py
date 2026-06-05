@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 import os
@@ -36,36 +35,34 @@ app.add_middleware(
 
 app.include_router(api_router, prefix="/api/v1")
 
-# Railway da WORKDIR=/app, backend/ ichidagi fayllar /app/ da
-# static/index.html => /app/static/index.html
-POSSIBLE = [
-    "/app/static",                    # backend/static/ (Railway)
-    "/app/frontend/src",              # agar frontend alohida bo'lsa
-    "/app/frontend",
-    os.path.join(os.path.dirname(__file__), "..", "static"),
-    os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "src"),
+# Frontend qidirish — Railway da backend/ build qilinadi
+# index.html quyidagi joylarda bo'lishi mumkin
+BASE = os.path.dirname(os.path.abspath(__file__))   # /app/app
+CANDIDATES = [
+    os.path.join(BASE, "static", "index.html"),           # /app/app/static/
+    os.path.join(BASE, "..", "static", "index.html"),      # /app/static/
+    "/app/static/index.html",
+    "/app/frontend/src/index.html",
+    "/app/frontend/index.html",
 ]
 
-STATIC_DIR = None
-for d in POSSIBLE:
-    d = os.path.abspath(d)
-    if os.path.isfile(os.path.join(d, "index.html")):
-        STATIC_DIR = d
+INDEX_FILE = None
+for c in CANDIDATES:
+    c = os.path.abspath(c)
+    if os.path.isfile(c):
+        INDEX_FILE = c
         break
 
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "frontend_dir": STATIC_DIR or "NOT FOUND",
-    }
+    return {"status": "ok", "index_file": INDEX_FILE or "NOT FOUND"}
 
 
 @app.get("/", include_in_schema=False)
 async def root():
-    if STATIC_DIR:
-        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    if INDEX_FILE:
+        return FileResponse(INDEX_FILE)
     return {"message": "API running", "docs": "/api/docs"}
 
 
@@ -73,6 +70,6 @@ async def root():
 async def spa(path: str):
     if path.startswith("api"):
         raise HTTPException(status_code=404)
-    if STATIC_DIR:
-        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    if INDEX_FILE:
+        return FileResponse(INDEX_FILE)
     raise HTTPException(status_code=404)
