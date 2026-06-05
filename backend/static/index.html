@@ -146,10 +146,14 @@ nav{flex:1;padding:8px;overflow-y:auto;}
 
 @media(max-width:768px){
   #sidebar{transform:translateX(-100%);}
-  #sidebar.open{transform:translateX(0);}
+  #sidebar.open{transform:translateX(0);box-shadow:2px 0 20px rgba(0,0,0,.5);}
   #main{margin-left:0;}
+  #burger{display:block!important;}
   .grid2{grid-template-columns:1fr;}
   .form-row{grid-template-columns:1fr;}
+  .stats{grid-template-columns:1fr 1fr;}
+  #content{padding:14px;}
+  .tbl th,.tbl td{padding:7px 6px;font-size:12px;}
 }
 </style>
 </head>
@@ -192,13 +196,17 @@ nav{flex:1;padding:8px;overflow-y:auto;}
 <!-- MAIN -->
 <div id="main" style="display:none">
   <div id="topbar">
-    <div class="topbar-title" id="tb-title">Dashboard</div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <button id="burger" onclick="toggleSidebar()" style="display:none;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:18px;padding:4px 10px">☰</button>
+      <div class="topbar-title" id="tb-title">Dashboard</div>
+    </div>
     <div class="topbar-right">
       <span style="font-size:11px;color:var(--text3)" id="tb-date"></span>
     </div>
   </div>
   <div id="content"></div>
 </div>
+<div id="sidebar-overlay" onclick="closeSidebar()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99"></div>
 
 <!-- ── MODALS ── -->
 
@@ -482,8 +490,23 @@ const PAGE_TITLES={
   'inventory':'📋 Inventarizatsiya'
 };
 
+function toggleSidebar(){
+  const sb=document.getElementById('sidebar');
+  const ov=document.getElementById('sidebar-overlay');
+  if(sb.classList.contains('open')){
+    sb.classList.remove('open');ov.style.display='none';
+  }else{
+    sb.classList.add('open');ov.style.display='block';
+  }
+}
+function closeSidebar(){
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').style.display='none';
+}
+
 function navigate(page){
   curPage=page;
+  closeSidebar();
   document.querySelectorAll('.ni').forEach(e=>e.classList.remove('active'));
   const b=document.getElementById('ni-'+page);if(b)b.classList.add('active');
   document.getElementById('tb-title').textContent=PAGE_TITLES[page]||page;
