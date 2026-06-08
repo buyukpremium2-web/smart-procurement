@@ -155,6 +155,15 @@ nav{flex:1;padding:8px;overflow-y:auto;}
   #content{padding:14px;}
   .tbl th,.tbl td{padding:7px 6px;font-size:12px;}
 }
+@media print{
+  #sidebar,#topbar,#sidebar-overlay,.btn{display:none!important;}
+  #main{margin-left:0!important;}
+  #content{padding:0!important;}
+  body{background:#fff!important;color:#000!important;}
+  .card{border:1px solid #000!important;background:#fff!important;}
+  .tbl th,.tbl td{color:#000!important;border:1px solid #000!important;}
+  .ct,.ch{color:#000!important;}
+}
 </style>
 </head>
 <body>
@@ -312,6 +321,34 @@ nav{flex:1;padding:8px;overflow-y:auto;}
   </div>
 </div>
 
+<!-- ORDER MODAL (Sotuvchi zakaz yaratish) -->
+<div class="modal-bg" id="m-order">
+  <div class="modal" style="width:560px">
+    <div class="mh"><div class="mt">🛒 Yangi Zakaz (Bozorchiga)</div><button class="close-x" onclick="cm('m-order')">✕</button></div>
+    <div class="mb">
+      <div class="info-box">Kerakli mahsulotlarni qo'shing. Bozorchi ko'rib bozordan oladi.</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px">
+        <div class="fg" style="margin-bottom:0;flex:1"><label class="fl">Mahsulot</label>
+          <select class="fsel" id="oi-prod"></select>
+        </div>
+        <div class="fg" style="margin-bottom:0;width:100px"><label class="fl">Miqdor</label>
+          <input class="fi" type="number" step="0.1" id="oi-qty" placeholder="0">
+        </div>
+        <button class="btn btn-s" onclick="addOrderItem()">+ Qo'shish</button>
+      </div>
+      <div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Mahsulot</th><th>Miqdor</th><th></th></tr></thead>
+        <tbody id="order-items-body"></tbody>
+      </table></div>
+      <div class="fg" style="margin-top:12px"><label class="fl">Izoh</label><input class="fi" id="order-notes" placeholder="ixtiyoriy"></div>
+    </div>
+    <div class="mf">
+      <button class="btn btn-s" onclick="cm('m-order')">Bekor</button>
+      <button class="btn btn-g" onclick="submitOrder()">📤 Bozorchiga yuborish</button>
+    </div>
+  </div>
+</div>
+
 <!-- PRODUCT MODAL -->
 <div class="modal-bg" id="m-product">
   <div class="modal">
@@ -354,7 +391,8 @@ let editUserId = null;
 
 const ROLES = {admin:'👑 Admin',seller:'🧑‍💼 Sotuvchi',buyer:'🛒 Bozorchi',warehouse_manager:'🏭 Omborchi',goods_receiver:'📥 Tovaroved'};
 const ST_COLOR = {draft:'cy',ai_generated:'cb2',buyer_confirmed:'co',warehouse_approved:'cg',rejected:'cr',receiving:'cp',completed:'cg'};
-const ST_UZ = {draft:'Qoralama',ai_generated:'AI',buyer_confirmed:'Bozorchi ✓',warehouse_approved:'Omborchi ✓',rejected:'Rad',receiving:'Qabul',completed:'Yakunlandi'};
+const ST_UZ = {draft:'Qoralama',ai_generated:'⏳ Bozorchida',buyer_confirmed:'⏳ Omborchida',warehouse_approved:'⏳ Tovarovedda',rejected:'❌ Rad etildi',receiving:'Qabul',completed:'✅ Yakunlandi'};
+const ST_COLOR2 = {draft:'cy',ai_generated:'co',buyer_confirmed:'co',warehouse_approved:'cb2',rejected:'cr',receiving:'cp',completed:'cg'};
 
 // ── API ─────────────────────────────────────────────
 async function api(method, path, body){
@@ -432,8 +470,8 @@ const NAV={
     {id:'seller-home',label:'Bosh Sahifa',icon:'📊'},
     {id:'sales',label:'Sotuv Kiritish',icon:'💰'},
     {id:'waste-entry',label:'Chiqindi Kiritish',icon:'🗑️'},
+    {id:'procurement',label:'Zakaz Berish',icon:'🛒'},
     {id:'stock',label:'Ombor Holati',icon:'🏪'},
-    {id:'extra-orders',label:"Qo'shimcha Zakazlar",icon:'📋'},
   ],
   buyer:[
     {id:'buyer-home',label:'Bosh Sahifa',icon:'📊'},
@@ -1351,35 +1389,209 @@ async function runAI(btn){
 async function renderProcurement(){
   loading();
   const orders=await api('GET','/procurement/').catch(()=>[]);
+  const canCreate=['seller','admin'].includes(me.role);
   setContent(`
-    <div style="margin-bottom:14px;font-size:13px;color:var(--text3)">${(orders||[]).length} ta zakaz</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div style="font-size:13px;color:var(--text3)">${(orders||[]).length} ta zakaz (jurnal)</div>
+      ${canCreate?`<button class="btn btn-g" onclick="openCreateOrder()">+ Yangi zakaz</button>`:''}
+    </div>
     <div class="card">
       <div class="tbl-wrap"><table class="tbl">
         <thead><tr><th>Zakaz №</th><th>Holat</th><th>Narx</th><th>Sana</th><th>Amal</th></tr></thead>
         <tbody>${(orders||[]).map(o=>`<tr>
           <td><strong>${o.order_number}</strong></td>
-          <td><span class="chip ${ST_COLOR[o.status]||'cy'}">${ST_UZ[o.status]||o.status}</span></td>
+          <td><span class="chip ${ST_COLOR2[o.status]||'cy'}">${ST_UZ[o.status]||o.status}</span></td>
           <td>${parseFloat(o.total_estimated_cost||0).toLocaleString()} so'm</td>
-          <td style="color:var(--text3)">${(o.created_at||'').slice(0,10)}</td>
-          <td>${o.status==='buyer_confirmed'&&['warehouse_manager','admin'].includes(me.role)?`
-            <button class="btn btn-sm btn-g" onclick="approveOrder('${o.id}')">✓</button>
-            <button class="btn btn-sm btn-r" onclick="rejectOrder('${o.id}')">✕</button>
-          `:'—'}</td>
+          <td style="color:var(--text3)">${(o.created_at||'').slice(0,10)} ${(o.created_at||'').slice(11,16)}</td>
+          <td><button class="btn btn-sm btn-s" onclick="openOrder('${o.id}')">👁 Ko'rish</button></td>
         </tr>`).join('')||'<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text3)">Zakazlar yo\'q</td></tr>'}
         </tbody>
       </table></div>
     </div>`);
 }
 
+// ── ZAKAZ TAFSILOTI (rolega qarab amallar) ──
+async function openOrder(id){
+  loading();
+  const o=await api('GET','/procurement/'+id).catch(()=>null);
+  if(!o){toast('Zakaz topilmadi','error');return;}
+
+  let actionsHtml='';
+  let itemsHeader='', itemsRows='';
+
+  // BOZORCHI: olgan miqdorni kiritadi (ai_generated holatida)
+  if(o.status==='ai_generated' && ['buyer','admin'].includes(me.role)){
+    itemsHeader=`<th>Mahsulot</th><th>So'ralgan</th><th>Olingan</th><th>Narx</th>`;
+    itemsRows=o.items.map(it=>`<tr>
+      <td><strong>${it.product_name}</strong> <span style="color:var(--text3)">${it.unit}</span></td>
+      <td style="color:var(--blue)">${it.requested_qty}</td>
+      <td><input class="fi" type="number" step="0.1" style="width:90px" id="bq-${it.id}" value="${it.requested_qty}"></td>
+      <td><input class="fi" type="number" style="width:100px" id="bp-${it.id}" placeholder="narx"></td>
+    </tr>`).join('');
+    actionsHtml=`<button class="btn btn-g" onclick="buyerConfirm('${id}')">✓ Olganlarimni tasdiqlash → Omborchiga</button>`;
+  }
+  // OMBORCHI: qabul/tahrir/bekor (buyer_confirmed holatida)
+  else if(o.status==='buyer_confirmed' && ['warehouse_manager','admin'].includes(me.role)){
+    itemsHeader=`<th>Mahsulot</th><th>So'ralgan</th><th>Olingan</th><th>Narx</th><th>Summa</th>`;
+    itemsRows=o.items.map(it=>`<tr>
+      <td><strong>${it.product_name}</strong> <span style="color:var(--text3)">${it.unit}</span></td>
+      <td style="color:var(--blue)">${it.requested_qty}</td>
+      <td style="color:var(--green)">${it.bought_qty}</td>
+      <td>${parseFloat(it.price||0).toLocaleString()}</td>
+      <td>${(it.bought_qty*it.price).toLocaleString()}</td>
+    </tr>`).join('');
+    actionsHtml=`
+      <button class="btn btn-g" onclick="approveOrder('${id}')">✓ Tasdiqlash → Tovarovedga</button>
+      <button class="btn btn-r" onclick="rejectOrder('${id}')">✕ Rad etish</button>`;
+  }
+  // TOVAROVED: qabul qilish (warehouse_approved holatida)
+  else if(o.status==='warehouse_approved' && ['goods_receiver','admin'].includes(me.role)){
+    itemsHeader=`<th>Mahsulot</th><th>Kutilgan</th><th>Qabul</th><th>Buzilgan</th><th>Narx</th>`;
+    itemsRows=o.items.map(it=>`<tr>
+      <td><strong>${it.product_name}</strong> <span style="color:var(--text3)">${it.unit}</span></td>
+      <td style="color:var(--blue)">${it.bought_qty}</td>
+      <td><input class="fi" type="number" step="0.1" style="width:80px" id="rq-${it.id}" value="${it.bought_qty}"></td>
+      <td><input class="fi" type="number" step="0.1" style="width:70px" id="rd-${it.id}" value="0"></td>
+      <td><input class="fi" type="number" style="width:90px" id="rp-${it.id}" value="${it.price||''}"></td>
+    </tr>`).join('');
+    actionsHtml=`<button class="btn btn-g" onclick="receiveGoods('${id}')">✓ Qabul qilish → Omborga kirim</button>`;
+  }
+  // COMPLETED yoki ko'rish: nakladnoy + Excel
+  else {
+    itemsHeader=`<th>Mahsulot</th><th>So'ralgan</th><th>Olingan</th><th>Qabul</th><th>Narx</th><th>Summa</th>`;
+    itemsRows=o.items.map(it=>{
+      const qty=it.received_qty||it.bought_qty||it.requested_qty;
+      const price=it.actual_price||it.price||0;
+      return `<tr>
+        <td><strong>${it.product_name}</strong> <span style="color:var(--text3)">${it.unit}</span></td>
+        <td>${it.requested_qty}</td>
+        <td>${it.bought_qty||'—'}</td>
+        <td style="color:var(--green)">${it.received_qty||'—'}</td>
+        <td>${parseFloat(price).toLocaleString()}</td>
+        <td>${(qty*price).toLocaleString()}</td>
+      </tr>`;}).join('');
+    if(o.status==='completed'){
+      actionsHtml=`
+        <button class="btn btn-s" onclick="window.print()">🖨 Pechat</button>
+        <button class="btn btn-g" onclick="downloadExcel('${id}','${o.order_number}')">📊 Excel yuklab olish</button>`;
+    }
+  }
+
+  setContent(`
+    <button class="btn btn-s btn-sm" onclick="navigate('procurement')" style="margin-bottom:14px">← Orqaga</button>
+    <div class="card" id="nakladnoy">
+      <div class="ch">
+        <div class="ct">📋 ${o.status==='completed'?'NAKLADNOY':'Zakaz'} — ${o.order_number}</div>
+        <span class="chip ${ST_COLOR2[o.status]||'cy'}">${ST_UZ[o.status]||o.status}</span>
+      </div>
+      <div class="cb">
+        <div style="display:flex;gap:24px;margin-bottom:14px;font-size:13px;color:var(--text2);flex-wrap:wrap">
+          <div>📅 Sana: <strong>${(o.created_at||'').slice(0,10)}</strong></div>
+          <div>💰 Summa: <strong style="color:var(--green)">${parseFloat(o.total_actual_cost||o.total_estimated_cost||0).toLocaleString()} so'm</strong></div>
+        </div>
+        ${o.buyer_notes?`<div style="font-size:12px;color:var(--text3);margin-bottom:10px">📝 ${o.buyer_notes}</div>`:''}
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr>${itemsHeader}</tr></thead>
+          <tbody>${itemsRows}</tbody>
+        </table></div>
+        <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">${actionsHtml}</div>
+      </div>
+    </div>`);
+}
+
+async function buyerConfirm(id){
+  const o=await api('GET','/procurement/'+id);
+  const items=o.items.map(it=>({
+    item_id:it.id,
+    bought_qty:parseFloat(document.getElementById('bq-'+it.id).value)||0,
+    price:parseFloat(document.getElementById('bp-'+it.id).value)||0,
+  })).filter(x=>x.bought_qty>0);
+  if(!items.length){toast('Kamida bitta mahsulot olining','error');return;}
+  try{
+    await api('POST','/procurement/'+id+'/buyer-confirm',{items,notes:'Bozorchi tasdiqladi'});
+    toast('Zakaz omborchiga yuborildi!','success');
+    navigate('procurement');
+  }catch(e){toast(e.message,'error');}
+}
+
 async function approveOrder(id){
-  if(!confirm('Zakazni tasdiqlamoqchimisiz?'))return;
-  try{await api('PATCH','/procurement/'+id+'/approve',{notes:'Web panel'});toast('Zakaz tasdiqlandi!','success');renderProcurement();}
+  if(!confirm('Tasdiqlab tovarovedga yuborilsinmi?'))return;
+  try{await api('PATCH','/procurement/'+id+'/approve',{notes:'Omborchi tasdiqladi'});toast('Tovarovedga yuborildi!','success');navigate('procurement');}
   catch(e){toast(e.message,'error');}
 }
 async function rejectOrder(id){
   const n=prompt('Rad etish sababi:');if(n===null)return;
-  try{await api('PATCH','/procurement/'+id+'/reject',{notes:n||'Rad'});toast('Zakaz rad etildi','success');renderProcurement();}
+  try{await api('PATCH','/procurement/'+id+'/reject',{notes:n||'Rad'});toast('Rad etildi','success');navigate('procurement');}
   catch(e){toast(e.message,'error');}
+}
+
+async function receiveGoods(id){
+  const o=await api('GET','/procurement/'+id);
+  const items=o.items.map(it=>({
+    item_id:it.id,
+    received_qty:parseFloat(document.getElementById('rq-'+it.id).value)||0,
+    damaged_qty:parseFloat(document.getElementById('rd-'+it.id).value)||0,
+    actual_price:parseFloat(document.getElementById('rp-'+it.id).value)||0,
+  }));
+  if(!confirm('Tovar qabul qilinib omborga kirim qilinsinmi?'))return;
+  try{
+    await api('POST','/procurement/'+id+'/receive',{items,notes:'Qabul qilindi'});
+    toast('Tovar qabul qilindi, ombor yangilandi!','success');
+    navigate('procurement');
+  }catch(e){toast(e.message,'error');}
+}
+
+function downloadExcel(id,num){
+  const url=API+'/api/v1/procurement/'+id+'/excel';
+  fetch(url,{headers:{'Authorization':'Bearer '+token}})
+    .then(r=>r.blob())
+    .then(blob=>{
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download='nakladnoy_'+num+'.xlsx';
+      a.click();
+    }).catch(e=>toast('Yuklab olishda xato','error'));
+}
+
+// ── SOTUVCHI: ZAKAZ YARATISH ──
+let orderItems=[];
+async function openCreateOrder(){
+  products=await api('GET','/products/').catch(()=>[]);
+  orderItems=[];
+  const sel=document.getElementById('oi-prod');
+  sel.innerHTML='<option value="">Tanlang...</option>'+(products||[]).map(p=>`<option value="${p.id}">${p.name} (${p.unit})</option>`).join('');
+  renderOrderModal();
+  om('m-order');
+}
+function renderOrderModal(){
+  const body=document.getElementById('order-items-body');
+  body.innerHTML=orderItems.map((it,i)=>{
+    const p=products.find(x=>x.id===it.product_id);
+    return `<tr>
+      <td>${p?p.name:'?'}</td>
+      <td>${it.quantity} ${p?p.unit:''}</td>
+      <td><button class="btn btn-sm btn-r" onclick="removeOrderItem(${i})">✕</button></td>
+    </tr>`;
+  }).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--text3);padding:12px">Mahsulot qo\'shing</td></tr>';
+}
+function addOrderItem(){
+  const pid=document.getElementById('oi-prod').value;
+  const qty=parseFloat(document.getElementById('oi-qty').value);
+  if(!pid){toast('Mahsulot tanlang','error');return;}
+  if(!qty||qty<=0){toast('Miqdor kiriting','error');return;}
+  orderItems.push({product_id:pid,quantity:qty});
+  document.getElementById('oi-qty').value='';
+  renderOrderModal();
+}
+function removeOrderItem(i){orderItems.splice(i,1);renderOrderModal();}
+async function submitOrder(){
+  if(!orderItems.length){toast('Kamida bitta mahsulot qo\'shing','error');return;}
+  try{
+    const r=await api('POST','/procurement/',{items:orderItems,notes:document.getElementById('order-notes').value||null});
+    toast('Zakaz bozorchiga yuborildi!','success');
+    cm('m-order');
+    navigate('procurement');
+  }catch(e){toast(e.message,'error');}
 }
 
 async function renderUsers(){
