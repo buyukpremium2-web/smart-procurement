@@ -1020,6 +1020,7 @@ async def notification_poller():
                 resp = await client.get(f"{BACKEND_URL}/api/v1/notifications/pending-telegram")
                 if resp.status_code == 200:
                     notifs = resp.json()
+                    sent_ids = []
                     for n in notifs:
                         tg_id = n.get("telegram_id")
                         if not tg_id:
@@ -1032,14 +1033,23 @@ async def notification_poller():
                         )
                         try:
                             await bot.send_message(tg_id, text)
-                            # Yuborildi deb belgilaymiz
-                            await client.post(f"{BACKEND_URL}/api/v1/notifications/{n['id']}/mark-sent")
+                            sent_ids.append(n["id"])
                         except Exception as e:
                             logger.error(f"Notification yuborishda xato: {e}")
+
+                    # Bir nechta notification'ni bitta so'rovda belgilaymiz
+                    # (avval har biriga alohida so'rov yuborilardi — pool'ni band qilib turardi)
+                    if sent_ids:
+                        try:
+                            await client.post(
+                                f"{BACKEND_URL}/api/v1/notifications/mark-sent-bulk",
+                                json={"notif_ids": sent_ids}
+                            )
+                        except Exception as e:
+                            logger.error(f"Bulk mark-sent xato: {e}")
         except Exception as e:
             logger.error(f"Notification poller xato: {e}")
         await asyncio.sleep(10)
-
 
 # =====================
 # MAIN
