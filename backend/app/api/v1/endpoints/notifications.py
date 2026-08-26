@@ -1,11 +1,16 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from pydantic import BaseModel
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.models import Notification, User
 
 router = APIRouter()
+
+
+class MarkSentBulkRequest(BaseModel):
+    notif_ids: list[str]
 
 
 @router.get("/")
@@ -65,6 +70,20 @@ async def mark_sent(notif_id: str, db: AsyncSession = Depends(get_db)):
     )
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/mark-sent-bulk")
+async def mark_sent_bulk(payload: MarkSentBulkRequest, db: AsyncSession = Depends(get_db)):
+    """Bot uchun: bir nechta bildirishnomani bitta so'rovda 'yuborildi' deb belgilaydi"""
+    if not payload.notif_ids:
+        return {"ok": True, "updated": 0}
+    await db.execute(
+        update(Notification)
+        .where(Notification.id.in_(payload.notif_ids))
+        .values(sent_to_telegram=True)
+    )
+    await db.commit()
+    return {"ok": True, "updated": len(payload.notif_ids)}
 
 
 @router.post("/mark-all-read")
