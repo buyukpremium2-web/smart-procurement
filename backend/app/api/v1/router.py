@@ -4,7 +4,8 @@ from app.api.v1.endpoints import (
     procurement, ai, warehouse, receiving,
     notifications, dashboard, users, inventory, ledger, journal, sync, devices
 )
-
+from app.api.v1.endpoints import reports
+api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 api_router = APIRouter()
 
 api_router.include_router(auth.router,        prefix="/auth",         tags=["Auth"])
